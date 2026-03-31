@@ -470,6 +470,23 @@ namespace QuantConnect.Lean.Engine.DataFeeds
                 foreach (var subscription in universe.GetSubscriptionRequests(member, dateTimeUtc, algorithmEndDateUtc,
                                                                               _algorithm.SubscriptionManager.SubscriptionDataConfigService))
                 {
+                    // Remove consolidators BEFORE removing the subscription, while the
+                    // config is still registered in _subscriptionManagerSubscriptions.
+                    // This ensures RemoveConsolidator can find the config and properly
+                    // dispose the ConsolidatorWrapper (setting Disposed=true so it gets
+                    // cleaned up from the priority queue in ScanPastConsolidators).
+                    // Without this, consolidators for removed securities accumulate in
+                    // the scan queue, causing O(total_securities_ever_seen) overhead per
+                    // time step that grows throughout the backtest.
+                    if (!isActive && subscription.Configuration.Consolidators.Count > 0)
+                    {
+                        foreach (var consolidator in subscription.Configuration.Consolidators.ToList())
+                        {
+                            _algorithm.SubscriptionManager.RemoveConsolidator(member.Symbol, consolidator);
+                        }
+                        subscription.Configuration.Consolidators.Clear();
+                    }
+
                     if (_dataManager.RemoveSubscription(subscription.Configuration, universe))
                     {
                         _internalSubscriptionManager.RemovedSubscriptionRequest(subscription);
