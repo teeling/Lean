@@ -15,6 +15,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using NodaTime;
 using QuantConnect.Data;
 using QuantConnect.Interfaces;
@@ -67,18 +68,36 @@ namespace QuantConnect.Lean.Engine.HistoricalData
         /// <returns>An enumerable of the slices of data covering the span specified in each request</returns>
         public override IEnumerable<Slice> GetHistory(IEnumerable<HistoryRequest> requests, DateTimeZone sliceTimeZone)
         {
-            // create subscription objects from the configs
             var subscriptions = new List<Subscription>();
-            foreach (var request in requests)
+            var requestList = requests.ToList();
+
+            if (_brokerage is IBatchHistoryProvider batchProvider && requestList.Count > 1)
             {
-                var history = _brokerage.GetHistory(request);
-                if (history == null)
+                // Batch path: fetch all symbols in grouped multi-symbol API calls
+                var batchResults = batchProvider.GetHistoryBatch(requestList);
+
+                foreach (var request in requestList)
                 {
-                    // doesn't support this history request, that's okay
-                    continue;
+                    if (batchResults.TryGetValue(request.Symbol, out var history) && history.Count > 0)
+                    {
+                        var subscription = CreateSubscription(request, history);
+                        subscriptions.Add(subscription);
+                    }
                 }
-                var subscription = CreateSubscription(request, history);
-                subscriptions.Add(subscription);
+            }
+            else
+            {
+                // Per-symbol path (single request or brokerage does not support batching)
+                foreach (var request in requestList)
+                {
+                    var history = _brokerage.GetHistory(request);
+                    if (history == null)
+                    {
+                        continue;
+                    }
+                    var subscription = CreateSubscription(request, history);
+                    subscriptions.Add(subscription);
+                }
             }
 
             if (subscriptions.Count == 0)
